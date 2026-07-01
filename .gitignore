@@ -1,0 +1,12 @@
+*.o
+*.out
+chat_server
+reactor_server
+stress_test
+stress_test_real
+*.log
+.vscode/
+.idea/
+.agents/
+agent/
+skills-lock.json

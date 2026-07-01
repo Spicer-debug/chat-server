@@ -8,8 +8,8 @@
 #include <time.h>
 #include <errno.h>
 #include "protocol.h"
-#define THREAD_COUNT 300
-#define MSG_PER_CLIENT 10
+#define THREAD_COUNT 500
+#define MSG_PER_CLIENT 100
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 8888
 
@@ -29,13 +29,14 @@ void* client_thread(void* arg){
         close(sock);
         return NULL;
     }
+    sleep(1); // 等待服务器处理连接
     const char* msg = "Hello from stress test!";
     for(int i = 0;i < MSG_PER_CLIENT; i++){
         if(send_protocol(sock,msg,strlen(msg)) == -1){
             perror("send");
             break;
         }
-        usleep(50000);
+        usleep(200000);
     }
     close(sock);
     return NULL;

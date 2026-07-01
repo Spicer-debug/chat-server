@@ -36,21 +36,33 @@ int recv_protocol(int sock,char* out_buf,int max_len){
     int total = 0;
     while(total < 4){
         int ret = recv(sock,(char*)&net_len + total,4 - total,0);
-        if(ret <= 0){
-            return ret;
+        if(ret < 0){
+            if(errno == EAGAIN || errno == EWOULDBLOCK){
+                return -1;  // 非阻塞模式：暂无数据
+            }
+            return -2;  // 错误
+        }
+        if(ret == 0){
+            return 0;  // EOF
         }
         total += ret;
     }
     int len = ntohl(net_len);
     if(len <= 0 || len >= max_len){
-        return -1;
+        return -2;
     }
 
     total = 0;
     while(total < len){
         int ret = recv(sock,out_buf + total,len - total, 0);
-        if(ret <= 0){
-            return -1;
+        if(ret < 0){
+            if(errno == EAGAIN || errno == EWOULDBLOCK){
+                return -1;
+            }
+            return -2;
+        }
+        if(ret == 0){
+            return 0;
         }
         total += ret;
     }

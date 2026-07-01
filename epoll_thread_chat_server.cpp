@@ -22,8 +22,8 @@
 #define PORT 8888
 #define HEARTBEAT_INTERVAL 30
 #define HEART_CHECK_INTERVAL 5
-#define MSG_QUEUE_MAX 4096
-#define SEND_WORKER_NUM 4
+#define MSG_QUEUE_MAX 65536
+#define SEND_WORKER_NUM 16
 #define LOG_QUEUE_MAX 1024
 using namespace std;
 
@@ -63,7 +63,7 @@ typedef struct{
 
 LogQueue g_log_queue;
 
-// 新增：保护客户端vector的互斥锁
+// 保护客户端vector的互斥锁
 pthread_mutex_t g_clnt_mutex;
 vector<Client> clnt_socks;
 
@@ -81,7 +81,7 @@ void queue_init(MsgQueue* q){
     pthread_cond_init(&q->cond,nullptr);
 }
 
-// 队列满判断（修复rear+1）
+// 队列满判断
 static int queue_is_full(MsgQueue* q){
     return (q->rear + 1) % MSG_QUEUE_MAX == q->front;
 }
@@ -108,7 +108,7 @@ int queue_push(MsgQueue* q,const char* data,int len, int sender_fd){
     return 0;
 }
 
-// 消费者出队（修复front+1越界bug）
+// 消费者出队
 int queue_pop(MsgQueue* q,MsgItem* out){
     pthread_mutex_lock(&q->mutex);
     // while处理虚假唤醒
@@ -165,7 +165,7 @@ void* log_worker_thread(void* arg){
 }
 
 
-// 发送工作线程（修复vector遍历、过滤发送者、加锁访问客户端列表）
+// 发送工作线程
 void* send_worker_thread(void* arg){
     (void)arg;
     MsgItem msg;
@@ -249,7 +249,7 @@ int main() {
         exit(1);
     }
 
-    // 初始化消息队列 + 启动发送线程（epoll循环前）
+    // 初始化消息队列 + 启动发送线程
     queue_init(&g_msg_queue);
     pthread_t send_tids[SEND_WORKER_NUM];
     for(int i = 0; i < SEND_WORKER_NUM; i++)
@@ -303,25 +303,27 @@ int main() {
             uint32_t revents = ep_events[i].events;
             // 新连接
             if (cur_fd == serv_sock) {
-                clnt_adr_sz = sizeof(clnt_adr);
-                clnt_sock = accept4(serv_sock, (struct sockaddr*)&clnt_adr, &clnt_adr_sz, SOCK_NONBLOCK);
-                if (clnt_sock == -1) {
-                    if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                        LOG_ERROR("accept error: %s",strerror(errno));
-                    }   
-                    continue;
+                while (1) {
+                    clnt_adr_sz = sizeof(clnt_adr);
+                    clnt_sock = accept4(serv_sock, (struct sockaddr*)&clnt_adr, &clnt_adr_sz, SOCK_NONBLOCK);
+                    if (clnt_sock == -1) {
+                        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                            LOG_ERROR("accept error: %s",strerror(errno));
+                        }
+                        break;
+                    }
+
+                    event.events = EPOLLIN;
+                    event.data.fd = clnt_sock;
+                    epoll_ctl(epfd, EPOLL_CTL_ADD, clnt_sock, &event);
+
+                    // 加锁插入客户端
+                    pthread_mutex_lock(&g_clnt_mutex);
+                    clnt_socks.push_back({clnt_sock,time(NULL)});
+                    size_t online = clnt_socks.size();
+                    pthread_mutex_unlock(&g_clnt_mutex);
+                    LOG_INFO("新客户端连接：%d，在线人数：%zu", clnt_sock, online);
                 }
-
-                event.events = EPOLLIN;
-                event.data.fd = clnt_sock;
-                epoll_ctl(epfd, EPOLL_CTL_ADD, clnt_sock, &event);
-
-                // 加锁插入客户端
-                pthread_mutex_lock(&g_clnt_mutex);
-                clnt_socks.push_back({clnt_sock,time(NULL)});
-                size_t online = clnt_socks.size();
-                pthread_mutex_unlock(&g_clnt_mutex);
-                LOG_INFO("新客户端连接：%d，在线人数：%zu", clnt_sock, online);
             } else {
                 if(revents & (EPOLLHUP | EPOLLERR)){
                     remove_client(cur_fd);
@@ -331,6 +333,10 @@ int main() {
                 if(revents & EPOLLIN){
                     char buffer[BUF_SIZE];
                     int ret = recv_protocol(cur_fd,buffer,BUF_SIZE);
+                    if(ret == -1){
+                        // 非阻塞 EAGAIN，等下次 EPOLLIN
+                        continue;
+                    }
                     if(ret <= 0){
                         remove_client(cur_fd);
                         continue;
